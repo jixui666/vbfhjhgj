@@ -640,7 +640,7 @@ enum MainAPI {
             }
             let dest = staging.appendingPathComponent(destName,
                                                       isDirectory: isDir.boolValue || isWhole)
-            let parent = (dest as NSString).deletingLastPathComponent
+            let parent = (dest.path as NSString).deletingLastPathComponent
             if !parent.isEmpty && parent != staging.path {
                 try? fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
             }
