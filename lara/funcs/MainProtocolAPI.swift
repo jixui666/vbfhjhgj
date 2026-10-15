@@ -542,7 +542,20 @@ enum MainAPI {
            FileManager.default.fileExists(atPath: p) {
             return p
         }
-        // 2) Direct scan of /var/mobile/Containers/Data/Application — plain
+        // 2) group.* 容器在 Shared/AppGroup（备忘录等），不在 Data/Application。
+        if bid.hasPrefix("group.") {
+            let groot = "/var/mobile/Containers/Shared/AppGroup"
+            if let gdirs = try? FileManager.default.contentsOfDirectory(atPath: groot) {
+                for d in gdirs {
+                    let meta = groot + "/" + d + "/.com.apple.mobile_container_manager.metadata.plist"
+                    guard let pl = NSDictionary(contentsOfFile: meta),
+                          let ident = pl["MCMMetadataIdentifier"] as? String,
+                          ident == bid else { continue }
+                    return groot + "/" + d
+                }
+            }
+        }
+        // 3) Direct scan of /var/mobile/Containers/Data/Application — plain
         // file reads that work once the sandbox escape is live.
         let root = "/var/mobile/Containers/Data/Application"
         guard let dirs = try? FileManager.default.contentsOfDirectory(atPath: root) else {
