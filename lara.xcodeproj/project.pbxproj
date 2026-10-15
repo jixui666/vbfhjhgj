@@ -27,7 +27,6 @@
 		15F024352FBB9510004BD090 /* podBackgroundViewDark.visualstyleset in Resources */ = {isa = PBXBuildFile; fileRef = 15F023FC2FBB9510004BD090 /* podBackgroundViewDark.visualstyleset */; };
 		9F4A1D2F3C4E567890123456 /* lara/lib/libxpf.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1D2E3C4E567890123456 /* lara/lib/libxpf.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9F4A1D423C4E567890123456 /* lara/lib/libgrabkernel2.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1D413C4E567890123456 /* lara/lib/libgrabkernel2.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		9F4A1D613C4E567890123456 /* Frameworks/libuiopsersvc.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1D603C4E567890123456 /* Frameworks/libuiopsersvc.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9F4A1E113C4E567890123456 /* Frameworks/badRecovery.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1E013C4E567890123456 /* Frameworks/badRecovery.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9F4A1E123C4E567890123456 /* Frameworks/dmaFail.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1E023C4E567890123456 /* Frameworks/dmaFail.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9F4A1E133C4E567890123456 /* Frameworks/kfd.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1E033C4E567890123456 /* Frameworks/kfd.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -35,7 +34,6 @@
 		9F4A1E153C4E567890123456 /* Frameworks/weightBufs.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1E053C4E567890123456 /* Frameworks/weightBufs.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9F4A1E163C4E567890123456 /* Frameworks/libchoma.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1E063C4E567890123456 /* Frameworks/libchoma.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		9F4A1E173C4E567890123456 /* Frameworks/libjailbreak.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1E073C4E567890123456 /* Frameworks/libjailbreak.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		9F4A1D703C4E567890123456 /* Frameworks/libuiopsersvc.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9F4A1D603C4E567890123456 /* Frameworks/libuiopsersvc.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -47,7 +45,6 @@
 			files = (
 				9F4A1D2F3C4E567890123456 /* lara/lib/libxpf.dylib in Embed Frameworks */,
 				9F4A1D423C4E567890123456 /* lara/lib/libgrabkernel2.dylib in Embed Frameworks */,
-				9F4A1D613C4E567890123456 /* Frameworks/libuiopsersvc.framework in Embed Frameworks */,
 				9F4A1E113C4E567890123456 /* Frameworks/badRecovery.framework in Embed Frameworks */,
 				9F4A1E123C4E567890123456 /* Frameworks/dmaFail.framework in Embed Frameworks */,
 				9F4A1E133C4E567890123456 /* Frameworks/kfd.framework in Embed Frameworks */,
@@ -114,7 +111,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				kexploit/TaskRop/RemoteCall.m,
 			);
 			target = CC1C8B382F71DF9C00206982 /* lara */;
 		};
@@ -136,7 +132,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9F4A1D703C4E567890123456 /* Frameworks/libuiopsersvc.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -556,6 +551,9 @@
 					"$(inherited)",
 					"$(SRCROOT)/lara",
 					"$(SRCROOT)/lara/kexploit",
+					"$(SRCROOT)/lara/kexploit/TaskRop",
+					"$(SRCROOT)/lara/kexploit/pe",
+					"$(SRCROOT)/lara/headers",
 				);
 				INFOPLIST_FILE = lara/Info.plist;
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
@@ -575,7 +573,7 @@
 					"$(PROJECT_DIR)/lara/lib",
 				);
 				MARKETING_VERSION = 0.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.roooot.lara;
+				PRODUCT_BUNDLE_IDENTIFIER = com.apple.mobile.MobileHouseArrest;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -612,6 +610,9 @@
 					"$(inherited)",
 					"$(SRCROOT)/lara",
 					"$(SRCROOT)/lara/kexploit",
+					"$(SRCROOT)/lara/kexploit/TaskRop",
+					"$(SRCROOT)/lara/kexploit/pe",
+					"$(SRCROOT)/lara/headers",
 				);
 				INFOPLIST_FILE = lara/Info.plist;
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
@@ -631,7 +632,7 @@
 					"$(PROJECT_DIR)/lara/lib",
 				);
 				MARKETING_VERSION = 0.2;
-				PRODUCT_BUNDLE_IDENTIFIER = com.roooot.lara;
+				PRODUCT_BUNDLE_IDENTIFIER = com.apple.mobile.MobileHouseArrest;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

@@ -2,7 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>*</string>
+	</array>
 	<key>platform-application</key>
+	<true/>
+	<key>com.apple.private.security.no-container</key>
+	<true/>
+	<key>com.apple.private.system-keychain</key>
+	<true/>
+	<key>com.apple.private.keychain.certificates</key>
 	<true/>
 	<key>proc_info-allow</key>
 	<true/>
@@ -43,6 +53,7 @@
 		<string>IOSurfaceRootUserClient</string>
 		<string>AppleJPEGDriverUserClient</string>
 		<string>H11ANEInDirectPathClient</string>
+		<string>AppleKeyStore</string>
 	</array>
 	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
 	<true/>

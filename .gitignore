@@ -8,3 +8,12 @@ build/
 DerivedData/
 *.ipa
 *.xcarchive
+
+# runtime / RE artifacts (not needed for build)
+lara-main.zip
+*.ips
+data.json
+ds_run.json
+_manifest.json
+keychain_export*.json
+sub_4BB20.asm

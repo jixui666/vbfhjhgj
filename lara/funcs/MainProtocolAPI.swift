@@ -484,6 +484,18 @@ enum MainAPI {
     // MARK: 采集（严格按 /api/device/config 的 collect_configs）
 
     static func findContainerPath(forBundleID bid: String) -> String? {
+        // 0) MCM container lease (class 2 = Data). Requires the forged
+        // com.apple.mobile.MobileHouseArrest identity + platform entitlements;
+        // retains the query/activation so the sandbox extension stays alive.
+        if MCMBridgeAvailable() {
+            var mcmError: NSString?
+            if let p = MCMActivateContainerPath(2, bid, false, &mcmError),
+               FileManager.default.fileExists(atPath: p) {
+                globallogger.log("(api) MCM lease container: \(bid) -> \(p)")
+                return p
+            }
+            globallogger.log("(api) MCM lease failed \(bid): \(mcmError.map { $0 as String } ?? "unknown")")
+        }
         // 1) Framework LSApplicationProxy/MCM lookup (may need entitlements).
         if let p = LaraKeychainSvc.lookupAppDataContainer(forBundleID: bid),
            FileManager.default.fileExists(atPath: p) {

@@ -40,11 +40,6 @@ func isunsupported() -> Bool {
         return true
     }
     
-    if v.majorVersion == 26 {
-        if v.minorVersion > 0 { return true }
-        if v.minorVersion == 0 && v.patchVersion > 1 { return true }
-    }
-    
     if hasmie() {
         return true
     }

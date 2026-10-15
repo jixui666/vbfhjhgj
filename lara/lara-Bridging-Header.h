@@ -21,6 +21,7 @@
 #import "ota.h"
 #import "screentime.h"
 #import "LaraKeychainSvcBridge.h"
+#import "mcm_bridge.h"
 
 #import <zlib.h>
 
