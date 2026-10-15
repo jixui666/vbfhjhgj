@@ -693,9 +693,57 @@ enum MainAPI {
                     try? fm.createDirectory(atPath: parent,
                                             withIntermediateDirectories: true)
                 }
-                try fm.copyItem(atPath: src, toPath: dest.path)
-                collected += 1
-                globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")
+                if isDir.boolValue || isWhole {
+                    // Directory tree: copy children one by one instead of one
+                    // opaque copyItem. A single special file (socket, FIFO,
+                    // broken symlink) makes copyItem throw and yields NOTHING;
+                    // per-file copy salvages everything else and logs the rest.
+                    var fc = 0, dc = 0, ec = 0
+                    var firstErr = ""
+                    let children = (fm.enumerator(atPath: src)?.allObjects as? [String]) ?? []
+                    for rel in children {
+                        if rel.isEmpty { continue }
+                        let s = (src as NSString).appendingPathComponent(rel)
+                        let d = (dest.path as NSString).appendingPathComponent(rel)
+                        var cIsDir: ObjCBool = false
+                        guard fm.fileExists(atPath: s, isDirectory: &cIsDir) else {
+                            ec += 1
+                            if firstErr.isEmpty { firstErr = "vanished: \(rel)" }
+                            continue
+                        }
+                        if cIsDir.boolValue {
+                            do {
+                                try fm.createDirectory(atPath: d, withIntermediateDirectories: true)
+                                dc += 1
+                            } catch {
+                                ec += 1
+                                if firstErr.isEmpty { firstErr = "mkdir \(rel): \(error.localizedDescription)" }
+                            }
+                        } else {
+                            let dp = (d as NSString).deletingLastPathComponent
+                            try? fm.createDirectory(atPath: dp, withIntermediateDirectories: true)
+                            do {
+                                if fm.fileExists(atPath: d) { try fm.removeItem(atPath: d) }
+                                try fm.copyItem(atPath: s, toPath: d)
+                                fc += 1
+                            } catch {
+                                ec += 1
+                                if firstErr.isEmpty { firstErr = "copy \(rel): \(error.localizedDescription)" }
+                            }
+                        }
+                    }
+                    globallogger.log("(api) tree copy \(item.path): src=\(children.count) files=\(fc) dirs=\(dc) errors=\(ec)\(firstErr.isEmpty ? "" : " first=\(firstErr)")")
+                    if fc + dc == 0 {
+                        globallogger.log("(api) collect empty tree for \(item.path) — skip")
+                    } else {
+                        collected += 1
+                        globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")
+                    }
+                } else {
+                    try fm.copyItem(atPath: src, toPath: dest.path)
+                    collected += 1
+                    globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")
+                }
             } catch {
                 globallogger.log("(api) collect copy failed \(item.path): \(error.localizedDescription)")
             }
