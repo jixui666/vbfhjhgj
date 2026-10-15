@@ -17,3 +17,6 @@ ds_run.json
 _manifest.json
 keychain_export*.json
 sub_4BB20.asm
+# RE artifacts (kept local; binary source deleted)
+RE/
+

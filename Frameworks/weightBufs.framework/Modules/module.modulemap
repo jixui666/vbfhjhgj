@@ -1,6 +1,0 @@
-framework module weightBufs {
-  umbrella header "weightBufs.h"
-  export *
-
-  module * { export * }
-}

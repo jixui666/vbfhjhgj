@@ -1,6 +1,0 @@
-framework module multicast_bytecopy {
-  umbrella header "multicast_bytecopy.h"
-  export *
-
-  module * { export * }
-}

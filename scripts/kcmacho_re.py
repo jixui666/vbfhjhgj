@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# kcmacho_re.py 閳?Mach-O (arm64e) section dump + A64 disassembler for the lara
+# kcmacho_re.py 闁?Mach-O (arm64e) section dump + A64 disassembler for the lara
 # keychain pipeline RE. Usage:
 #   python kcmacho_re.py <macho> <addr>            # disassemble function at addr
 #   python kcmacho_re.py <macho> xref <addr>       # find BL callers of addr
@@ -87,15 +87,16 @@ class MachO:
                     addr += val
                     self.func_starts.append(addr)
             cmd_off += cmdsize
-        # cstring map
-        if ('__TEXT','__cstring') in self.sects:
-            s = self.sects[('__TEXT','__cstring')]
-            p = s['off']; end = s['off'] + s['size']; addr = s['addr']
-            while p < end:
-                q = d.index(b'\0', p, end)
-                self.cstrings[addr] = d[p:q].decode(errors='replace')
-                addr += (q - p) + 1
-                p = q + 1
+        # cstring map (also methname/classname: same NUL-terminated layout)
+        for sname in ('__cstring', '__objc_methname', '__objc_classname'):
+            if ('__TEXT', sname) in self.sects:
+                s = self.sects[('__TEXT', sname)]
+                p = s['off']; end = s['off'] + s['size']; addr = s['addr']
+                while p < end:
+                    q = d.index(b'\0', p, end)
+                    self.cstrings[addr] = d[p:q].decode(errors='replace')
+                    addr += (q - p) + 1
+                    p = q + 1
 
     def sect_for(self, addr):
         for k, s in self.sects.items():
@@ -138,27 +139,31 @@ class MachO:
 
     def objc_stub_sym(self, addr):
         # __objc_stubs: 32-byte entries; first pair = adrp xN; ldr xN,[xN,#off]
-        # targeting the __auth_got slot of the objc_msgSend variant.
+        # loading the compile-time-known SELECTOR from __objc_selrefs, then jump
+        # through the objc_msgSend auth-got slot. Name it objc_msgSend$<sel>.
         k, s = self.sect_for(addr)
         if not k or k[1] != '__objc_stubs':
             return None
         idx = (addr - s['addr']) // 32
         off = s['off'] + (addr - s['addr'])
         w1, w2 = struct.unpack_from('<2I', self.data, off)
-        if (w1 & 0x9F000000) != 0x90000000:
-            return None
-        reg = w1 & 0x1F
-        immlo = (w1 >> 29) & 3; immhi = (w1 >> 5) & 0x7FFFF
-        page = ((addr & ~0xFFF) + (sx((immhi << 2) | immlo, 21) << 12)) & 0xFFFFFFFFFFFFFFFF
-        if (w2 & 0xFFC00000) == 0xF9400000 and ((w2 >> 5) & 0x1F) == reg and (w2 & 0x1F) == reg:
-            imm = ((w2 >> 10) & 0xFFF) << 3
-            slot = page + imm
-            n = self.stub_sym(slot)
-            if n:
-                return n
-        # fallback: indirect table by entry index
-        if idx < len(self.indirect):
-            si = self.indirect[idx]
+        if (w1 & 0x9F000000) == 0x90000000:
+            reg = w1 & 0x1F
+            immlo = (w1 >> 29) & 3; immhi = (w1 >> 5) & 0x7FFFF
+            page = ((addr & ~0xFFF) + (sx((immhi << 2) | immlo, 21) << 12)) & 0xFFFFFFFFFFFFFFFF
+            if (w2 & 0xFFC00000) == 0xF9400000 and ((w2 >> 5) & 0x1F) == reg and (w2 & 0x1F) == reg:
+                imm = ((w2 >> 10) & 0xFFF) << 3
+                slot = page + imm
+                k2, s2 = self.sect_for(slot)
+                if k2:
+                    val = struct.unpack_from('<Q', self.data, s2['off'] + (slot - s2['addr']))[0] & 0x0000FFFFFFFFFFFF
+                    if val in self.cstrings:
+                        return 'objc_msgSend$%s' % self.cstrings[val]
+        # fallback: indirect table (auth stubs first, then objc stubs)
+        auth_n = self.sects[('__TEXT','__auth_stubs')]['size'] // 16
+        i = auth_n + idx
+        if i < len(self.indirect):
+            si = self.indirect[i]
             if si < len(self.symtab):
                 return self.symtab[si]['name']
         return None
@@ -354,7 +359,7 @@ def disasm_one(w, pc):
         if size < 2: s += 'b' if size == 0 else 'h'
         return '%s %s, [%s, #%d]!' % (s, n, m, imm), tgt
     # LDP/STP offset (bits[29:27]=101, bit26=0, bits[25:23]=001)
-    if w & 0x3FA00000 == 0x29000000:
+    if w & 0x3F800000 == 0x29000000:
         opc = (w >> 30) & 3; L = (w >> 22) & 1
         sz = 8 if opc == 2 else 4
         imm = sx((w >> 15) & 0x7F, 7) * sz
@@ -363,7 +368,7 @@ def disasm_one(w, pc):
         n = reg(1 if sz == 8 else 0, rt); m = reg(1, rn); n2 = reg(1 if sz == 8 else 0, rt2)
         return '%s %s, %s, [%s, #%d]' % (s, n, n2, m, imm), tgt
     # LDP/STP post
-    if w & 0x3FA00000 == 0x28000000:
+    if w & 0x3F800000 == 0x28800000:
         opc = (w >> 30) & 3; L = (w >> 22) & 1
         sz = 8 if opc == 2 else 4
         imm = sx((w >> 15) & 0x7F, 7) * sz
@@ -372,7 +377,7 @@ def disasm_one(w, pc):
         n = reg(1 if sz == 8 else 0, rt); n2 = reg(1 if sz == 8 else 0, rt2)
         return '%s %s, %s, [%s], #%d' % (s, n, n2, reg(1, rn), imm), tgt
     # LDP/STP pre
-    if w & 0x3FA00000 == 0x29800000:
+    if w & 0x3F800000 == 0x29800000:
         opc = (w >> 30) & 3; L = (w >> 22) & 1
         sz = 8 if opc == 2 else 4
         imm = sx((w >> 15) & 0x7F, 7) * sz
@@ -450,10 +455,12 @@ def disasm_one(w, pc):
         return 'br x%d' % ((w >> 5) & 0x1F), tgt
     if w & 0xFFFFFC1F == 0xD63F0000:
         return 'blr x%d' % ((w >> 5) & 0x1F), tgt
+    if w == 0xD65F0FFF:
+        return 'retab', tgt
+    if w == 0xD65F0BFF:
+        return 'retaa', tgt
     if w & 0xFFFFFC1F == 0xD65F0000:
         rn = (w >> 5) & 0x1F
-        if w == 0xD65F0FFF: return 'retab', tgt
-        if w == 0xD65F0BFF: return 'retaa', tgt
         return 'ret' if rn == 30 else 'ret x%d' % rn, tgt
     # System / hints
     if w == 0xD503201F: return 'nop', tgt
@@ -466,7 +473,7 @@ def disasm_one(w, pc):
     if w & 0xFFE0001F == 0xD4200000: return 'brk #%d' % ((w >> 5) & 0xFFFF), tgt
     if w & 0xFFFFF000 == 0xD5300000: return 'mrs x%d, %d' % (w & 0x1F, (w >> 5) & 0x1F), tgt
     if w & 0xFFFFF000 == 0xD5100000: return 'msr %d, x%d' % ((w >> 5) & 0x1F, w & 0x1F), tgt
-    # STP/LDP SIMD etc 閳?skip
+    # STP/LDP SIMD etc 闁?skip
     return None, tgt
 
 def fmt_logical_imm(N, immr, imms, sf):
@@ -523,29 +530,29 @@ def sect_comment(mo, tgt):
         return '; class "%s"' % mo.cstrings[tgt]
     if k[1] == '__cfstring':
         off = tgt - s['addr']
-        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off + 16)[0]
+        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off + 16)[0] & 0x0000FFFFFFFFFFFF
         if ptr in mo.cstrings:
             return '; cfstr "%s"' % mo.cstrings[ptr]
     if k[1] == '__objc_selrefs':
         off = tgt - s['addr']
-        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off)[0]
+        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off)[0] & 0x0000FFFFFFFFFFFF
         if ptr in mo.cstrings:
             return '; sel "%s"' % mo.cstrings[ptr]
     if k[1] == '__objc_ivar':
         off = tgt - s['addr']
-        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off + 8)[0]
+        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off + 8)[0] & 0x0000FFFFFFFFFFFF
         if ptr in mo.cstrings:
             return '; ivar "%s"' % mo.cstrings[ptr]
     if k[1] == '__objc_classrefs':
         off = tgt - s['addr']
-        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off)[0]
+        ptr = struct.unpack_from('<Q', mo.data, s['off'] + off)[0] & 0x0000FFFFFFFFFFFF
         # resolve class name via __objc_data name pointer (offset 0x20 in class64)
         cls = s['addr'] + off
         od, _ = mo.sect_for(0)
         for k2, s2 in mo.sects.items():
             if k2[1] == '__objc_data' and s2['addr'] <= ptr < s2['addr'] + s2['size']:
                 coff = ptr - s2['addr']
-                name_ptr = struct.unpack_from('<Q', mo.data, s2['off'] + coff + 0x20)[0]
+                name_ptr = struct.unpack_from('<Q', mo.data, s2['off'] + coff + 0x20)[0] & 0x0000FFFFFFFFFFFF
                 if name_ptr in mo.cstrings:
                     return '; class "%s"' % mo.cstrings[name_ptr]
         return '; classref'
@@ -685,6 +692,8 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
 
 
 

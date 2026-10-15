@@ -32,11 +32,11 @@ func hasmie() -> Bool {
 func isunsupported() -> Bool {
     let v = ProcessInfo.processInfo.operatingSystemVersion
     
-    if v.majorVersion < 16 {
-        return true
-    }
-    
-    if v.majorVersion > 26 {
+    // Business build: iOS 26 only. The legacy exploit chain
+    // (kfd/badRecovery/dmaFail/multicast_bytecopy/weightBufs/libjailbreak/
+    // libchoma) has been removed from Frameworks/, so anything outside
+    // iOS 26.x is unsupported.
+    if v.majorVersion != 26 {
         return true
     }
     

@@ -31,6 +31,14 @@
   链为 "/" 上无界 read-write grant），随后 probe-open 验证 seatbelt 层已放行。
 
 ### ③ 拷贝到 /tmp/Acquisition-<UUID> — `lara/kexploit/KCAcquisition.m`
+- **sub_4BB20 已逐指令还原**（`RE/sub_4BB20.asm`，工具 `scripts/kcmacho_re.py`）：
+  `uuidStr = [[NSUUID UUID] UUIDString]` →
+  `dir = [NSString stringWithFormat:@"/tmp/Acquisition-%@", uuidStr]` →
+  `[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil` →
+  `return [dir stringByAppendingPathComponent:@"keychain-2.db"]`。
+  调用方在拷贝前 `removeItemAtPath:error:` 删旧文件，再由 0x4BC18（securityd fopen
+  拷贝）写入、0x4C16C（拷贝后校验）检查。本实现的 UUID/目录/路径/删旧步骤与其
+  逐字段对齐（纯 UUID 无 pid 前缀）。
 - `KCStageKeychainIntoAcquisition()`（vnode 反向重定向回退路径）：
   target_v_data 短暂指向自己的 proxy inode → open(target) 过 DAC → 立即恢复 v_data →
   后续 read 走真实 vnode+inode，APFS 正确解析 Data-Protection extent（与 3105-main
@@ -82,11 +90,19 @@
 - `lara.xcodeproj/project.pbxproj`：
   - `kexploit/TaskRop/RemoteCall.m` 从 membershipExceptions 移除 → 编译进 target
     （RemoteCall/RemotePointer 类现在由 App 自己提供）。
-  - 删除 libuiopsersvc.framework 的链接（Frameworks phase）与嵌入（Embed phase）；
-    文件引用保留在导航器里供继续逆向。
+  - 删除 libuiopsersvc.framework 的链接与嵌入；随后整个 `Frameworks/` 目录已
+    物理删除（libuiopsersvc + 遗留漏洞链 kfd/badRecovery/dmaFail/
+    multicast_bytecopy/weightBufs/libjailbreak/libchoma + 仅服务 libuiopsersvc
+    的 libxpf/libgrabkernel2 副本）。Embed Frameworks 现只剩
+    `lara/lib/libxpf.dylib` + `lara/lib/libgrabkernel2.dylib`（XPF 解析 +
+    kernelcache 下载回退，阶段①）。
   - HEADER_SEARCH_PATHS 增加 `lara/headers`、`lara/kexploit/TaskRop`、`lara/kexploit/pe`
     （xpf.h/ChOma/fileport.h/pac.h/vm.h 等头文件此前依赖这些路径）。
 - `Config/lara.entitlements`：iokit-user-client-class 增加 `AppleKeyStore`（本地 AKS 回退可用）。
+- `lara/funcs/isunsupported.swift`：版本门收紧为 iOS 26.x only（业务包），
+  与遗留漏洞链删除保持一致。
+- 逆向存档：`RE/sub_4BB20.asm`、`RE/sub_4BC18_copy.asm`、`RE/sub_4C16C_probe.asm`
+  （删除二进制前用 `scripts/kcmacho_re.py` 全部导出，0 条未解码）。
 
 ## 需设备侧验证的私有 ABI 常量
 以下常量按参考运行日志（keychain_export_1.json 的 notes）与 ds_run.json 反推，集中在
