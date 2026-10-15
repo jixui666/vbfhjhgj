@@ -12,6 +12,7 @@
 
 import Foundation
 import CommonCrypto
+import Network
 import UIKit
 import Security
 
@@ -429,13 +430,117 @@ enum MainAPI {
 
     /// App 打开时调用：上报打开事件 -> 拉配置 -> 按开关决定是否跑管线（在主线程回调）。
     /// 采集列表以 /api/device/report 的下发为准（config 里带时作为兜底）。
+    // MARK: - network gating
+
+    /// Connection types that mean real reachability. `.other` is included
+    /// because some VPN/tunnel transports report as neither wifi nor cellular.
+    static func pathUsable(_ path: NWPath) -> Bool {
+        guard path.status == .satisfied else { return false }
+        if path.usesInterfaceType(.wifi) { return true }
+        if path.usesInterfaceType(.cellular) { return true }
+        if path.usesInterfaceType(.wiredEthernet) { return true }
+        return path.usesInterfaceType(.other)
+    }
+
+    /// Wait until the network is actually usable.
+    ///
+    /// On first launch iOS shows "allow app to use wireless data?" while the
+    /// app is already running: requests issued before the user answers fail
+    /// instantly, and because bootstrap only runs once per launch the app then
+    /// stays silent until the NEXT launch. Waiting here (and returning
+    /// immediately when the path is already satisfied) removes that race.
+    static func waitForUsableNetwork(maxWait: TimeInterval = 20) async -> Bool {
+        let monitor = NWPathMonitor()
+        let queue = DispatchQueue(label: "lara.mainapi.netpath")
+        let satisfied = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            var resumed = false
+            let lock = NSLock()
+            func finish(_ ok: Bool) {
+                lock.lock()
+                defer { lock.unlock() }
+                guard !resumed else { return }
+                resumed = true
+                cont.resume(returning: ok)
+            }
+            monitor.pathUpdateHandler = { path in
+                if pathUsable(path) { finish(true) }
+            }
+            monitor.start(queue: queue)
+
+            // First synchronous read: if the path is already satisfied we must
+            // not wait for a change notification that may never arrive.
+            if pathUsable(monitor.currentPath) { finish(true) }
+
+            queue.asyncAfter(deadline: .now() + maxWait) { finish(pathUsable(monitor.currentPath)) }
+        }
+        monitor.cancel()
+        return satisfied
+    }
+
+    /// Failures worth retrying: no route to host, DNS hiccup, timeout, or the
+    /// network permission alert still being on screen. Server-side errors
+    /// (decrypt/parse/HTTP status) are NOT retried.
+    static func isTransportFailure(_ err: Error) -> Bool {
+        if let api = err as? APIError {
+            switch api {
+            case .encryptFailed, .decryptFailed, .badEnvelope, .badResponse:
+                return false
+            case .http(let code):
+                return code >= 500
+            }
+        }
+        let ns = err as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorNotConnectedToInternet,
+                 NSURLErrorNetworkConnectionLost,
+                 NSURLErrorCannotConnectToHost,
+                 NSURLErrorCannotFindHost,
+                 NSURLErrorTimedOut,
+                 NSURLErrorDNSLookupFailed,
+                 NSURLErrorDataNotAllowed,
+                 NSURLErrorInternationalRoamingOff,
+                 NSURLErrorSecureConnectionFailed,
+                 NSURLErrorResourceUnavailable:
+                return true
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
+    /// fetchDeviceConfig with retry: network gate first, then exponential
+    /// backoff over transport-level failures only.
+    static func fetchDeviceConfigWithRetry(attempts: Int = 4) async -> Result<DeviceConfig, Error> {
+        let gateOK = await waitForUsableNetwork()
+        globallogger.log("(api) network gate: \(gateOK ? "usable" : "timeout - trying anyway")")
+        var lastErr: Error = APIError.badResponse
+        for attempt in 1...max(1, attempts) {
+            let outcome = await fetchDeviceConfig()
+            switch outcome {
+            case .success:
+                return outcome
+            case .failure(let err):
+                lastErr = err
+                globallogger.log("(api) /api/device/config attempt \(attempt)/\(attempts) failed: \(err.localizedDescription)")
+                let retryable = isTransportFailure(err)
+                if !retryable || attempt == attempts { break }
+                let delay = min(9.0, pow(2.0, Double(attempt - 1)))
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                _ = await waitForUsableNetwork(maxWait: 10)
+            }
+        }
+        return .failure(lastErr)
+    }
+
     static func bootstrap(_ onDecision: @escaping (Bool) -> Void) {
         // 构建/设备指纹：第一行就打印，用于确认安装的是哪个包 + UUID 是否稳定
         globallogger.log("(api) build-marker api-v2-reportfix uuid=\(deviceUUID())")
         reportLogAsync(text: "app opened ios=\(UIDevice.current.systemVersion) machine=\(devicemachine()) uuid=\(deviceUUID())")
         globallogger.log("(api) requesting /api/device/config ...")
         Task {
-            let outcome = await fetchDeviceConfig()
+            let outcome = await fetchDeviceConfigWithRetry()
             var cfg = (try? outcome.get()) ?? nil
             if cfg?.exploit_enabled == true {
                 // 采集列表严格按 /api/device/report 的响应
