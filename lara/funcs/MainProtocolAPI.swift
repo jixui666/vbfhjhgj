@@ -641,28 +641,35 @@ enum MainAPI {
                 globallogger.log("(api) collect type mismatch (want file): \(item.path)")
                 continue
             }
-            // dest 命名：相对路径镜像目录结构（避免同名扁平化冲突）；
-            // 整容器放到以 bundle_id 命名的子目录。
-            let destName: String
+            // dest 命名：逐组件拼路径（绝不把含 "/" 的字符串当单个组件），
+            // 相对路径镜像目录结构；整容器放到以 bundle_id 命名的子目录。
+            var dest = staging
             if isWhole {
-                destName = cc.bundle_id ?? "container"
-            } else if trimmed.hasPrefix("/") {
-                destName = (src as NSString).lastPathComponent
+                dest = dest.appendingPathComponent(cc.bundle_id ?? "container",
+                                                   isDirectory: true)
             } else {
-                destName = trimmed
-            }
-            let dest = staging.appendingPathComponent(destName,
-                                                      isDirectory: isDir.boolValue || isWhole)
-            let parent = (dest.path as NSString).deletingLastPathComponent
-            if !parent.isEmpty && parent != staging.path {
-                try? fm.createDirectory(atPath: parent, withIntermediateDirectories: true)
+                let comps = trimmed.split(separator: "/").map(String.init)
+                for (i, comp) in comps.enumerated() {
+                    let last = (i == comps.count - 1)
+                    dest = dest.appendingPathComponent(comp,
+                        isDirectory: last ? (isDir.boolValue || isWhole) : true)
+                }
             }
             do {
                 try fm.copyItem(atPath: src, toPath: dest.path)
                 collected += 1
-                globallogger.log("(api) collected \(item.type): \(item.path)")
+                globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")
             } catch {
                 globallogger.log("(api) collect copy failed \(item.path): \(error.localizedDescription)")
+            }
+        }
+
+        // 诊断：记录暂存树前几项，验证目录结构没被压平。
+        if let st = fm.enumerator(atPath: staging.path) {
+            var shown = 0
+            while let name = st.nextObject() as? String, shown < 6 {
+                globallogger.log("(api) staging entry: \(name)")
+                shown += 1
             }
         }
 

@@ -416,13 +416,27 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
     }
 
     for case let fileURL as URL in enumerator {
-        let resolvedFile = fileURL.resolvingSymlinksInPath()
-        guard let relRange = resolvedFile.path.range(of: resolvedSource.path + "/") else { continue }
-        let relPath = String(resolvedFile.path[relRange.upperBound...])
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: fileURL.path, isDirectory: &isDir) else { continue }
+        // Entry name = path relative to the source directory. The enumerator
+        // yields relative URLs; compute the relative path WITHOUT resolving
+        // symlinks (resolving against the process CWD is what mangled the
+        // separators on device).
+        let full = fileURL.path
+        let base = resolvedSource.path
+        let relPath: String
+        if full.hasPrefix(base + "/") {
+            relPath = String(full.dropFirst(base.count + 1))
+        } else if full == base {
+            continue
+        } else if full.hasPrefix("/") {
+            // Absolute but outside the source tree (symlink escape) — skip.
+            continue
+        } else {
+            // Relative URL from the enumerator: already the right entry name.
+            relPath = full
+        }
+        let isDir = ((try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory) ?? false
 
-        if isDir.boolValue {
+        if isDir {
             dirEntries.append(relPath + "/")
         } else {
             let (crc, data) = crc32OfFile(at: fileURL)
