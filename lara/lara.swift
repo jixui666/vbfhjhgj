@@ -212,7 +212,9 @@ struct lara: App {
                     var counts: [String] = []
                     if let tables {
                         for (k, v) in tables {
-                            let n = (v as? [Any])?.count ?? -1
+                            // Native pipeline stores row counts as NSNumber.
+                            let n = (v as? NSNumber)?.intValue
+                                ?? ((v as? [Any])?.count ?? -1)
                             counts.append("\(k)=\(n)")
                         }
                     }
