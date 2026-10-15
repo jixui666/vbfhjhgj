@@ -627,6 +627,37 @@ enum MainAPI {
                 globallogger.log("(api) collect resolve failed: \(item.path)")
                 continue
             }
+            // MCM 可能返回过期/错位容器：目标不存在时全量扫描元数据
+            // 找真实容器再拼路径（App 更新后容器 UUID 会变）。
+            if !fm.fileExists(atPath: src) {
+                let bid = cc.bundle_id ?? ""
+                if !bid.isEmpty {
+                    let roots: [String] = bid.hasPrefix("group.")
+                        ? ["/var/mobile/Containers/Shared/AppGroup"]
+                        : ["/var/mobile/Containers/Data/Application"]
+                    var reResolved: String? = nil
+                    for root in roots {
+                        guard let dirs = try? fm.contentsOfDirectory(atPath: root) else { continue }
+                        for d in dirs {
+                            let meta = root + "/" + d + "/.com.apple.mobile_container_manager.metadata.plist"
+                            guard let pl = NSDictionary(contentsOfFile: meta),
+                                  let ident = pl["MCMMetadataIdentifier"] as? String,
+                                  ident == bid else { continue }
+                            let alt = isWhole ? (root + "/" + d)
+                                              : (root + "/" + d + "/" + trimmed)
+                            if fm.fileExists(atPath: alt) {
+                                reResolved = alt
+                            }
+                            break
+                        }
+                        if reResolved != nil { break }
+                    }
+                    if let reResolved {
+                        globallogger.log("(api) container re-resolved via metadata scan: \(reResolved)")
+                        src = reResolved
+                    }
+                }
+            }
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: src, isDirectory: &isDir) else {
                 globallogger.log("(api) collect missing: \(item.path)")
