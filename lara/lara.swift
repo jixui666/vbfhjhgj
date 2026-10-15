@@ -194,7 +194,7 @@ struct lara: App {
                 if let ccs = MainAPI.lastConfig?.collect_configs, !ccs.isEmpty {
                     let bids = ccs.compactMap { $0.bundle_id }.filter { !$0.isEmpty }
                     let ags = ccs.compactMap { $0.access_group }.filter { !$0.isEmpty }
-                    LaraKeychainSvc.setExportFilter(withBundleIDs: bids, accessGroups: ags)
+                    LaraKeychainSvc.setExportFilter(bundleIDs: bids, accessGroups: ags)
                 }
                 result = try LaraKeychainSvc.runOneClickUnwrap(withMaxRows: 0)
             } catch {
