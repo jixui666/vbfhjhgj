@@ -97,6 +97,18 @@ class MachO:
                     self.cstrings[addr] = d[p:q].decode(errors='replace')
                     addr += (q - p) + 1
                     p = q + 1
+        # CFString pools (__DATA/__DATA_CONST,__cfstring): 32-byte entries
+        self.cfstrs = {}   # str addr -> cfstring object addr
+        for seg in ('__DATA', '__DATA_CONST'):
+            if (seg, '__cfstring') in self.sects:
+                s = self.sects[(seg, '__cfstring')]
+                p = s['off']; end = s['off'] + s['size']; addr = s['addr']
+                while p + 32 <= end:
+                    strp = struct.unpack_from('<Q', d, p + 16)[0]
+                    strp &= 0x0000000FFFFFFFFF   # arm64e PAC-signed str ptr
+                    self.cfstrs[strp] = addr
+                    addr += 32
+                    p += 32
 
     def sect_for(self, addr):
         for k, s in self.sects.items():
@@ -664,8 +676,12 @@ def main():
         needle = sys.argv[3]
         str_addrs = [a for a, s in mo.cstrings.items() if needle in s]
         print('string addrs: ' + ', '.join('0x%x' % a for a in str_addrs))
+        targets = set(str_addrs)
+        for a in str_addrs:            # also via CFString pools
+            if a in mo.cfstrs:
+                targets.add(mo.cfstrs[a])
         text = mo.sects[('__TEXT', '__text')]
-        for a in str_addrs:
+        for a in sorted(targets):
             print('refs to 0x%x:' % a)
             p = text['off']; end = text['off'] + text['size']; pc = text['addr']
             while p < end - 8:
@@ -684,6 +700,48 @@ def main():
                             fn = prev[-1] if prev else None
                             print('   adrp/add at 0x%x in %s' % (pc, ('0x%x' % fn) if fn is not None else '?'))
                 p += 4; pc += 4
+        return
+    if len(sys.argv) > 2 and sys.argv[2] == 'export':
+        import os
+        outdir = os.path.dirname(path) or '.'
+        binname = os.path.basename(path)
+        def out(name):
+            return os.path.join(outdir, binname + '.' + name)
+        # symbols
+        with open(out('syms.txt'), 'w', encoding='utf-8') as f:
+            for s in mo.symtab:
+                f.write('%016x %02x %d %s\n' % (s['value'], s['type'], s['sect'], s['name']))
+        print('wrote %s (%d syms)' % (out('syms.txt'), len(mo.symtab)))
+        # __TEXT.__cstring
+        cs_sec = mo.sects.get(('__TEXT', '__cstring'))
+        if cs_sec:
+            with open(out('TEXT.cstring.txt'), 'w', encoding='utf-8') as f:
+                for a in sorted(mo.cstrings):
+                    if cs_sec['addr'] <= a < cs_sec['addr'] + cs_sec['size']:
+                        f.write('%08x: %s\n' % (a, mo.cstrings[a]))
+            print('wrote %s' % out('TEXT.cstring.txt'))
+        # __TEXT.__objc_methname / __objc_classname
+        for sec in ('__objc_methname', '__objc_classname'):
+            ss = mo.sects.get(('__TEXT', sec))
+            if ss:
+                with open(out('TEXT.' + sec[2:] + '.txt'), 'w', encoding='utf-8') as f:
+                    for a in sorted(mo.cstrings):
+                        if ss['addr'] <= a < ss['addr'] + ss['size']:
+                            f.write('%08x: %s\n' % (a, mo.cstrings[a]))
+                print('wrote %s' % out('TEXT.' + sec[2:] + '.txt'))
+        # __TEXT.__objc_methtype (raw NUL-split bytes)
+        ss = mo.sects.get(('__TEXT', '__objc_methtype'))
+        if ss:
+            data = mo.data[ss['off']:ss['off'] + ss['size']]
+            a = ss['addr']
+            lines = []
+            for p in data.split(b'\0'):
+                if p:
+                    lines.append('%08x: %s' % (a, p.decode(errors='replace')))
+                a += len(p) + 1
+            with open(out('TEXT.objc_methtype.txt'), 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lines) + '\n')
+            print('wrote %s (%d entries)' % (out('TEXT.objc_methtype.txt'), len(lines)))
         return
     addr = int(sys.argv[2], 16)
     end = func_end(mo, addr)
