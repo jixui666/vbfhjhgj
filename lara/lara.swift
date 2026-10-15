@@ -141,6 +141,17 @@ struct lara: App {
         case .active:
             globallogger.capture()
             iconthememgr.startPendingFixupIfPossible()
+            // The first-launch wireless-data alert blocks the app's network
+            // while the pipeline may already be running on the offline
+            // fallback config; the real config only becomes fetchable after
+            // the user taps Allow. Re-fetch on foreground instead of forcing
+            // the user to relaunch.
+            MainAPI.retryBootstrapIfNeeded { run in
+                if run {
+                    MainAPI.reportLogAsync(text: "pipeline started (foreground retry)")
+                    self.autorunkeychainpipeline()
+                }
+            }
 
         @unknown default:
             break

