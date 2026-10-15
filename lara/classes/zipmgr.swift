@@ -409,42 +409,40 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
 
     let resolvedSource = sourceURL.resolvingSymlinksInPath()
 
-    guard let enumerator = fm.enumerator(at: resolvedSource, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+    // The string enumerator yields paths RELATIVE to the source dir, which are
+    // exactly the zip entry names. The URL enumerator is deliberately not used
+    // here: on device its absolute URLs never reliably match the base string
+    // (/private/var vs /var, encodings), so every entry fell into a skip
+    // branch and we shipped 22-byte empty zips.
+    let basePath = resolvedSource.path
+    guard let relPaths = fm.enumerator(atPath: basePath)?.allObjects as? [String] else {
         error = "(zip) cannot enumerate source directory"
         mgr.logmsg("\(error)")
         throw ZipError.corruptArchive("\(error)")
     }
 
-    for case let fileURL as URL in enumerator {
-        // Entry name = path relative to the source directory. The enumerator
-        // yields relative URLs; compute the relative path WITHOUT resolving
-        // symlinks (resolving against the process CWD is what mangled the
-        // separators on device).
-        let full = fileURL.path
-        let base = resolvedSource.path
-        let relPath: String
-        if full.hasPrefix(base + "/") {
-            relPath = String(full.dropFirst(base.count + 1))
-        } else if full == base {
-            continue
-        } else if full.hasPrefix("/") {
-            // Absolute but outside the source tree (symlink escape) — skip.
-            continue
-        } else {
-            // Relative URL from the enumerator: already the right entry name.
-            relPath = full
-        }
-        // Resolve against the source directory: relative enumerator URLs
-        // cannot be read via Data(contentsOf:) (CWD is "/" on iOS).
-        let absURL = resolvedSource.appendingPathComponent(relPath)
-        let isDir = ((try? absURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory) ?? false
+    var scannedEntries = 0
+    for relPath in relPaths {
+        if relPath.isEmpty { continue }
+        // Symlink-escape guard: entry must stay inside the source tree.
+        let absPath = (basePath as NSString).appendingPathComponent(relPath)
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: absPath, isDirectory: &isDir) else { continue }
+        scannedEntries += 1
 
-        if isDir {
+        if isDir.boolValue {
             dirEntries.append(relPath + "/")
         } else {
-            let (crc, data) = crc32OfFile(at: absURL)
+            let (crc, data) = crc32OfFile(at: URL(fileURLWithPath: absPath))
             fileEntries.append((relPath, data, crc))
         }
+    }
+
+    mgr.logmsg("(zip) scan: \(scannedEntries) entries -> \(fileEntries.count) file(s), \(dirEntries.count) dir(s)")
+    if fileEntries.isEmpty && dirEntries.isEmpty {
+        error = "(zip) source tree enumerated empty (\(scannedEntries) seen) — refusing to write an empty archive"
+        mgr.logmsg("\(error)")
+        throw ZipError.corruptArchive("\(error)")
     }
 
     guard fm.createFile(atPath: destinationURL.path, contents: nil, attributes: nil) else {

