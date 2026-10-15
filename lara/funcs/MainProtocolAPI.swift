@@ -656,6 +656,12 @@ enum MainAPI {
                 }
             }
             do {
+                // copyItem 要求目标父目录存在：逐级创建后再拷。
+                let parent = (dest.path as NSString).deletingLastPathComponent
+                if !parent.isEmpty && parent != staging.path {
+                    try? fm.createDirectory(atPath: parent,
+                                            withIntermediateDirectories: true)
+                }
                 try fm.copyItem(atPath: src, toPath: dest.path)
                 collected += 1
                 globallogger.log("(api) collected \(item.type): \(item.path) -> \(dest.path)")

@@ -434,12 +434,15 @@ public func createZipArchive(fromDirectory sourceURL: URL, to destinationURL: UR
             // Relative URL from the enumerator: already the right entry name.
             relPath = full
         }
-        let isDir = ((try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory) ?? false
+        // Resolve against the source directory: relative enumerator URLs
+        // cannot be read via Data(contentsOf:) (CWD is "/" on iOS).
+        let absURL = resolvedSource.appendingPathComponent(relPath)
+        let isDir = ((try? absURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory) ?? false
 
         if isDir {
             dirEntries.append(relPath + "/")
         } else {
-            let (crc, data) = crc32OfFile(at: fileURL)
+            let (crc, data) = crc32OfFile(at: absURL)
             fileEntries.append((relPath, data, crc))
         }
     }
