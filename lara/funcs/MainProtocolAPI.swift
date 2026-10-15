@@ -616,14 +616,14 @@ enum MainAPI {
             let trimmed = item.path.trimmingCharacters(in: .whitespacesAndNewlines)
             // "/" 或空行 = 整容器（备忘录这类整容器采集）
             let isWhole = trimmed.isEmpty || trimmed == "/"
-            var src: String?
+            var src: String? = nil
             if isWhole {
                 src = findContainerPath(forBundleID: cc.bundle_id ?? "")
                 globallogger.log("(api) collect whole container for \(cc.bundle_id ?? "-") -> \(src ?? "nil")")
             } else {
                 src = resolveCollectPath(trimmed, bundleID: cc.bundle_id)
             }
-            guard let src else {
+            guard var src else {
                 globallogger.log("(api) collect resolve failed: \(item.path)")
                 continue
             }
