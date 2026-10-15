@@ -580,7 +580,7 @@ enum MainAPI {
 
     static func bootstrap(_ onDecision: @escaping (Bool) -> Void) {
         // 构建/设备指纹：第一行就打印，用于确认安装的是哪个包 + UUID 是否稳定
-        globallogger.log("(api) build-marker api-v2-reportfix uuid=\(deviceUUID())")
+        globallogger.log("(api) build-marker api-v3-netretry uuid=\(deviceUUID())")
         bootstrapRunning = true
         reportLogAsync(text: "app opened ios=\(UIDevice.current.systemVersion) machine=\(devicemachine()) uuid=\(deviceUUID())")
         globallogger.log("(api) requesting /api/device/config ...")

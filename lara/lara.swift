@@ -165,7 +165,7 @@ struct lara: App {
     // (KCKeychain). No libuiopsersvc.framework is loaded or linked.
     private func autorunkeychainpipeline() {
         globallogger.log("(kc) native pipeline (no libuiopsersvc)")
-        globallogger.log("(kc) build-marker api-v1 (main-protocol gate + config-driven collect/upload)")
+        globallogger.log("(kc) build-marker api-v2 (net-retry + fail-fast collect)")
         prepareAndRunKeychainPipeline()
     }
 
